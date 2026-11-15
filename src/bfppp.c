@@ -60,6 +60,79 @@ static void path_dir(const char *path, char *out, size_t out_size) {
     out[len] = '\0';
 }
 
+
+static void skip_if_false(const char **pc) {
+    const char *p = *pc + 1;
+    const char *else_pos = NULL;
+    int depth = 1;
+
+    while (*p && depth > 0) {
+        if (*p == '"') {
+            p++;
+            while (*p && *p != '"') p++;
+            if (*p) p++;
+            continue;
+        }
+
+        if (*p == '#') {
+            while (*p && *p != '\n') p++;
+            continue;
+        }
+
+        if (*p == '{') {
+            depth++;
+        } else if (*p == '}') {
+            depth--;
+
+            if (depth == 0) {
+                *pc = else_pos ? else_pos : p;
+                return;
+            }
+        } else if (*p == ':' && depth == 1 && !else_pos) {
+            else_pos = p;
+        }
+
+        p++;
+    }
+
+    *pc = p;
+}
+
+static void skip_if_else(const char **pc) {
+    const char *p = *pc + 1;
+    int depth = 1;
+
+    while (*p && depth > 0) {
+        if (*p == '"') {
+            p++;
+            while (*p && *p != '"') p++;
+            if (*p) p++;
+            continue;
+        }
+
+        if (*p == '#') {
+            while (*p && *p != '\n') p++;
+            continue;
+        }
+
+        if (*p == '{') {
+            depth++;
+        } else if (*p == '}') {
+            depth--;
+
+            if (depth == 0) {
+                *pc = p;
+                return;
+            }
+        }
+
+        p++;
+    }
+
+    *pc = p;
+}
+
+
 static void exec(const char *code, char **output_ptr, char *tape, char **ptr,
                  Function *functions, int *func_count, const char *base_dir) {
     const char *pc = code;
@@ -375,8 +448,7 @@ static void exec(const char *code, char **output_ptr, char *tape, char **ptr,
                 fflush(stdout);
                 break;
             }
-            default:
-                break;
+
         }
         pc++;
     }
