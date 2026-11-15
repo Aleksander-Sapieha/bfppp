@@ -363,6 +363,18 @@ static void exec(const char *code, char **output_ptr, char *tape, char **ptr,
                     }
                     continue;
                 }
+
+            case '"': {
+                pc++;
+
+                while (*pc && *pc != '"') {
+                    putchar((unsigned char)*pc);
+                    pc++;
+                }
+
+                fflush(stdout);
+                break;
+            }
             default:
                 break;
         }

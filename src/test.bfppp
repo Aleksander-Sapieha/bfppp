@@ -1,3 +1,4 @@
 !stdlib/io.bfppp
 
 ?printChar{a}
+?printStr{Hello World}

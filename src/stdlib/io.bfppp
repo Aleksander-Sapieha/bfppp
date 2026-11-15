@@ -1,2 +1,5 @@
 %printChar{o}(=o.)
 %inputChar{}(,)
+%printStr{text}(
+    "text"
+)
