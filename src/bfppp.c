@@ -4,29 +4,64 @@
 #include <ctype.h>
 
 typedef enum {
-OP_INC, OP_DEC, OP_LEFT, OP_RIGHT,
-OP_LOOP_START, OP_LOOP_END,
-OP_CALL
+    OP_INC, OP_DEC, OP_LEFT, OP_RIGHT,
+    OP_LOOP_START, OP_LOOP_END,
+    OP_CALL
 } OpType;
 
 
 typedef struct Op {
-OpType type;
-int arg; // repeat count or function id
-struct Op *next;
-struct Op *match; // for loops
+    OpType type;
+    int arg; // repeat count or function id
+    struct Op *next;
+    struct Op *match; // for loops
 } Op;
 
 typedef struct {
-char name[32];
-char params[64];
-char *body; // stored function body as string
+    char name[32];
+    char params[64];
+    char *body; // stored function body as string
 } Function;
 
 // Execute a code string on the provided tape and pointer. Maintains a function
 // table so that definitions (%...) and calls (?...) work across nested execs.
+static void resolve_import_path(const char *base_dir, const char *filename,
+                               char *out, size_t out_size) {
+    if (!base_dir || base_dir[0] == '\0') {
+        snprintf(out, out_size, "%s", filename);
+        return;
+    }
+    if (filename[0] == '/') {
+        snprintf(out, out_size, "%s", filename);
+        return;
+    }
+
+    size_t base_len = strlen(base_dir);
+    size_t name_len = strlen(filename);
+    if (base_len + 1 + name_len + 1 > out_size) {
+        snprintf(out, out_size, "%s/%s", base_dir, filename);
+        return;
+    }
+
+    memcpy(out, base_dir, base_len);
+    out[base_len] = '/';
+    memcpy(out + base_len + 1, filename, name_len + 1);
+}
+
+static void path_dir(const char *path, char *out, size_t out_size) {
+    const char *slash = strrchr(path, '/');
+    if (!slash) {
+        out[0] = '\0';
+        return;
+    }
+    size_t len = (size_t)(slash - path);
+    if (len >= out_size) len = out_size - 1;
+    memcpy(out, path, len);
+    out[len] = '\0';
+}
+
 static void exec(const char *code, char **output_ptr, char *tape, char **ptr,
-                 Function *functions, int *func_count) {
+                 Function *functions, int *func_count, const char *base_dir) {
     const char *pc = code;
     int loop;
 
@@ -248,7 +283,7 @@ static void exec(const char *code, char **output_ptr, char *tape, char **ptr,
                     *outp = '\0';
 
                     // execute expanded body
-                    exec(expanded, output_ptr, tape, ptr, functions, func_count);
+                    exec(expanded, output_ptr, tape, ptr, functions, func_count, base_dir);
                     free(expanded);
                 }
                 continue;
@@ -273,8 +308,42 @@ static void exec(const char *code, char **output_ptr, char *tape, char **ptr,
                         filename[fi++] = *pc++;
                     }
                     filename[fi] = '\0';
-                    FILE *f = fopen(filename, "r");
+
+                    char resolved[512] = {0};
+                    resolve_import_path(base_dir, filename, resolved, sizeof(resolved));
+
+                    FILE *f = NULL;
+                    const char *candidates[5] = { resolved, filename, NULL, NULL, NULL };
+                    char with_bfppp[512] = {0};
+                    char with_bfpp[512] = {0};
+                    size_t name_len = strlen(filename);
+                    if (strstr(filename, ".") == NULL) {
+                        if (name_len + 7 < sizeof(with_bfppp)) {
+                            memcpy(with_bfppp, resolved, strlen(resolved));
+                            memcpy(with_bfppp + strlen(resolved), ".bfppp", 7);
+                            candidates[2] = with_bfppp;
+                        }
+                        if (name_len + 6 < sizeof(with_bfpp)) {
+                            memcpy(with_bfpp, resolved, strlen(resolved));
+                            memcpy(with_bfpp + strlen(resolved), ".bfpp", 6);
+                            candidates[3] = with_bfpp;
+                        }
+                    }
+
+                    const char *opened = NULL;
+                    for (int i = 0; i < 5; ++i) {
+                        if (!candidates[i]) continue;
+                        f = fopen(candidates[i], "r");
+                        if (f) {
+                            opened = candidates[i];
+                            break;
+                        }
+                    }
+
                     if (f) {
+                        char import_base_dir[512] = {0};
+                        path_dir(opened, import_base_dir, sizeof(import_base_dir));
+
                         fseek(f, 0, SEEK_END);
                         long fsize = ftell(f);
                         fseek(f, 0, SEEK_SET);
@@ -284,7 +353,7 @@ static void exec(const char *code, char **output_ptr, char *tape, char **ptr,
                             if (filecode) {
                                 size_t r = fread(filecode, 1, fsize, f);
                                 filecode[r] = '\0';
-                                exec(filecode, output_ptr, tape, ptr, functions, func_count);
+                                exec(filecode, output_ptr, tape, ptr, functions, func_count, import_base_dir);
                                 free(filecode);
                             }
                         } else {
@@ -301,7 +370,7 @@ static void exec(const char *code, char **output_ptr, char *tape, char **ptr,
     }
 }
 
-void bfppp(const char *input, char *output) {
+static void bfppp_impl(const char *input, char *output, const char *base_dir) {
     // top-level interpreter setup
     char tape[30000] = {0};
     char *ptr = tape;
@@ -309,8 +378,12 @@ void bfppp(const char *input, char *output) {
     int func_count = 0;
     char *out_ptr = output;
 
-    exec(input, &out_ptr, tape, &ptr, functions, &func_count);
+    exec(input, &out_ptr, tape, &ptr, functions, &func_count, base_dir);
     *out_ptr = '\0';
+}
+
+void bfppp(const char *input, char *output) {
+    bfppp_impl(input, output, NULL);
 }
 
 int main(int argc, char **argv) {
@@ -344,7 +417,16 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    bfppp(code, output);
+    char base_dir[512] = {0};
+    const char *slash = strrchr(inpath, '/');
+    if (slash) {
+        size_t len = (size_t)(slash - inpath);
+        if (len >= sizeof(base_dir)) len = sizeof(base_dir) - 1;
+        memcpy(base_dir, inpath, len);
+        base_dir[len] = '\0';
+    }
+
+    bfppp_impl(code, output, base_dir);
     printf("%s\n", output);
     free(code);
     return 0;
